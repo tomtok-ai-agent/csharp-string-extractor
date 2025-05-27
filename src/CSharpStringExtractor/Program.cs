@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.CommandLine;
-using System.CommandLine.Invocation;
+using System.CommandLine.Binding;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -24,25 +24,33 @@ namespace CSharpStringExtractor
         /// <returns>A task representing the asynchronous operation</returns>
         public static async Task<int> Main(string[] args)
         {
-            var rootCommand = new RootCommand("Extract string literals from C# source code files")
+            var directoryOption = new Option<DirectoryInfo>(
+                new[] { "--directory", "-d" },
+                "The directory containing C# source code files to analyze"
+            )
             {
-                new Option<DirectoryInfo>(
-                    new[] { "--directory", "-d" },
-                    "The directory containing C# source code files to analyze"
-                )
-                {
-                    IsRequired = true
-                },
-                new Option<FileInfo>(
-                    new[] { "--output", "-o" },
-                    "The output JSON file path"
-                )
-                {
-                    IsRequired = true
-                }
+                IsRequired = true
             };
 
-            rootCommand.Handler = CommandHandler.Create<DirectoryInfo, FileInfo>(ExtractStringsFromDirectory);
+            var outputOption = new Option<FileInfo>(
+                new[] { "--output", "-o" },
+                "The output JSON file path"
+            )
+            {
+                IsRequired = true
+            };
+
+            var rootCommand = new RootCommand("Extract string literals from C# source code files")
+            {
+                directoryOption,
+                outputOption
+            };
+
+            rootCommand.SetHandler(async (DirectoryInfo directory, FileInfo output) =>
+            {
+                await ExtractStringsFromDirectory(directory, output);
+            }, directoryOption, outputOption);
+
             return await rootCommand.InvokeAsync(args);
         }
 
@@ -105,16 +113,32 @@ namespace CSharpStringExtractor
                 var syntaxTree = CSharpSyntaxTree.ParseText(code);
                 var root = await syntaxTree.GetRootAsync();
                 
-                // Find all string literals in the syntax tree
-                var stringLiteralNodes = root.DescendantNodes()
+                // Find all regular string literals in the syntax tree
+                var regularStringLiterals = root.DescendantNodes()
                     .OfType<LiteralExpressionSyntax>()
                     .Where(node => node.Kind() == SyntaxKind.StringLiteralExpression);
                 
-                foreach (var node in stringLiteralNodes)
+                foreach (var node in regularStringLiterals)
                 {
                     // Extract the string value without quotes
                     var stringValue = node.Token.ValueText;
                     stringLiterals.Add(stringValue);
+                }
+                
+                // Find all interpolated string literals
+                var interpolatedStrings = root.DescendantNodes()
+                    .OfType<InterpolatedStringExpressionSyntax>();
+                    
+                foreach (var interpolatedString in interpolatedStrings)
+                {
+                    // Get the raw text of the interpolated string
+                    var text = interpolatedString.ToString();
+                    // Remove the leading $ and quotes
+                    if (text.StartsWith("$\"") && text.EndsWith("\""))
+                    {
+                        text = text.Substring(2, text.Length - 3);
+                    }
+                    stringLiterals.Add(text);
                 }
             }
             catch (Exception ex)
